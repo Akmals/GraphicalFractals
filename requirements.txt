@@ -1,0 +1,6 @@
+pygame>=2.5
+numpy>=1.26
+matplotlib>=3.8
+# Uncomment when on PC with CUDA:
+# numba>=0.59
+# cupy-cuda12x>=13.0
