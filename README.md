@@ -2,6 +2,7 @@
 
 An interactive fractal explorer that uses Python multiprocessing to render fractals in parallel across all CPU cores.
 
+VIEW LIVE HERE: https://web-zeta-jet-29.vercel.app/ 
 ## Features
 - 3 Fractals: Mandelbrot Set, Julia Set (with live animation), Burning Ship
 - Parallel rendering using Python multiprocessing
