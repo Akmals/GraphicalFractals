@@ -1,100 +1,97 @@
 """
 julia.py — Julia Set fractal renderer.
 
-The Julia set uses a fixed complex parameter `c` (instead of mapping
-each pixel to c like Mandelbrot). Animating `c` in a circle produces
-mesmerising morphing patterns.
+Uses Numba JIT compilation with parallel=True for native multi-core speed.
+Falls back to fast NumPy vectorisation if Numba is unavailable.
 
-Parallel strategy: same strip-based multiprocessing as Mandelbrot.
+The Julia set uses a fixed complex parameter `c`; each pixel's starting
+z is its own position on the complex plane. Animating `c` produces
+mesmerising looping animations.
 """
 
 import numpy as np
-from multiprocessing import Pool
-import sys
-import os
-import math
+import sys, os, math
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from backend import BACKEND, NUM_WORKERS
+from backend import BACKEND
+
+try:
+    from numba import njit, prange
+    _NUMBA = True
+except ImportError:
+    _NUMBA = False
 
 
-def _render_strip(args):
-    """Render a horizontal strip of the Julia set in a worker process."""
-    width, y_start, y_end, height, xmin, xmax, ymin, ymax, max_iter, cx, cy = args
+if _NUMBA:
+    @njit(parallel=True, cache=True, fastmath=True)
+    def _julia_numba(width, height, xmin, xmax, ymin, ymax, max_iter, cx, cy):
+        result = np.zeros((height, width), dtype=np.float64)
+        dx = (xmax - xmin) / width
+        dy = (ymax - ymin) / height
+        log2 = np.log(2.0)
 
-    result = np.zeros((y_end - y_start, width), dtype=np.float64)
+        for py in prange(height):
+            zy0 = ymin + py * dy
+            for px in range(width):
+                zx, zy = xmin + px * dx, zy0
+                i = 0
+                while zx * zx + zy * zy <= 4.0 and i < max_iter:
+                    zx, zy = zx * zx - zy * zy + cx, 2.0 * zx * zy + cy
+                    i += 1
+                if i < max_iter:
+                    log_zn = np.log(zx * zx + zy * zy) * 0.5
+                    nu = np.log(log_zn / log2) / log2
+                    result[py, px] = i + 1.0 - nu
 
-    for row_idx, py in enumerate(range(y_start, y_end)):
-        for px in range(width):
-            # pixel → complex z (starting point)
-            zx = xmin + px * (xmax - xmin) / width
-            zy = ymin + py * (ymax - ymin) / height
-
-            iteration = 0
-            while zx * zx + zy * zy <= 4.0 and iteration < max_iter:
-                zx, zy = zx * zx - zy * zy + cx, 2.0 * zx * zy + cy
-                iteration += 1
-
-            if iteration < max_iter:
-                log_zn = np.log(zx * zx + zy * zy) / 2.0
-                nu = np.log(log_zn / np.log(2)) / np.log(2)
-                result[row_idx, px] = iteration + 1 - nu
-            else:
-                result[row_idx, px] = 0.0
-
-    return y_start, result
+        return result
 
 
-def _render_sequential(width, height, bounds, max_iter, c):
-    xmin, xmax, ymin, ymax = bounds
-    args = (width, 0, height, height, xmin, xmax, ymin, ymax, max_iter, c.real, c.imag)
-    _, result = _render_strip(args)
-    return result
+def _julia_numpy(width, height, xmin, xmax, ymin, ymax, max_iter, cx, cy):
+    x  = np.linspace(xmin, xmax, width,  dtype=np.float64)
+    y  = np.linspace(ymin, ymax, height, dtype=np.float64)
+    zx, zy = np.meshgrid(x, y)
+    zx = zx.copy(); zy = zy.copy()
+    alive = np.ones((height, width), dtype=bool)
+    iters = np.zeros((height, width), dtype=np.float32)
 
-
-def _render_multiprocessing(width, height, bounds, max_iter, c):
-    xmin, xmax, ymin, ymax = bounds
-    strip_height = height // NUM_WORKERS
-
-    strips = []
-    for i in range(NUM_WORKERS):
-        y_start = i * strip_height
-        y_end = height if i == NUM_WORKERS - 1 else y_start + strip_height
-        strips.append((width, y_start, y_end, height, xmin, xmax, ymin, ymax,
-                        max_iter, c.real, c.imag))
+    for _ in range(max_iter):
+        ax  = zx[alive]; ay = zy[alive]
+        zx[alive] = ax * ax - ay * ay + cx
+        zy[alive] = 2.0 * ax * ay + cy
+        iters[alive] += 1.0
+        alive &= (zx * zx + zy * zy <= 4.0)
+        if not alive.any():
+            break
 
     result = np.zeros((height, width), dtype=np.float64)
-
-    with Pool(processes=NUM_WORKERS) as pool:
-        for y_start, strip_data in pool.map(_render_strip, strips):
-            result[y_start: y_start + strip_data.shape[0]] = strip_data
-
+    esc = iters < max_iter
+    if esc.any():
+        zx2_e  = zx[esc] ** 2; zy2_e = zy[esc] ** 2
+        log_zn = np.log(np.maximum(zx2_e + zy2_e, 1e-10)) / 2.0
+        nu     = np.log(np.maximum(log_zn / np.log(2), 1e-10)) / np.log(2)
+        result[esc] = iters[esc] + 1.0 - nu
     return result
 
 
+_warmed_up = False
+
 def render(width, height, bounds, max_iter=256, c=None, force_sequential=False):
-    """
-    Render the Julia set for complex parameter c.
-    Default c is a visually interesting starting value.
-    Animate c by calling render() repeatedly with changing c.
-    """
+    """Render the Julia set for complex parameter c."""
+    global _warmed_up
     if c is None:
         c = complex(-0.7, 0.27015)
+    xmin, xmax, ymin, ymax = bounds
 
-    if force_sequential or BACKEND == "SEQUENTIAL":
-        return _render_sequential(width, height, bounds, max_iter, c)
-    elif BACKEND == "MULTIPROCESSING":
-        return _render_multiprocessing(width, height, bounds, max_iter, c)
-    elif BACKEND == "CUDA":
-        raise NotImplementedError("Switch to PC to use CUDA backend.")
+    if _NUMBA:
+        if not _warmed_up:
+            _julia_numba(64, 64, xmin, xmax, ymin, ymax, 16, c.real, c.imag)
+            _warmed_up = True
+        return _julia_numba(width, height, xmin, xmax, ymin, ymax, max_iter, c.real, c.imag)
     else:
-        return _render_sequential(width, height, bounds, max_iter, c)
+        return _julia_numpy(width, height, xmin, xmax, ymin, ymax, max_iter, c.real, c.imag)
 
 
 def get_animated_c(t: float, radius: float = 0.7885) -> complex:
-    """
-    Returns c on a circle of given radius in the complex plane.
-    t is time in seconds. Produces a looping Julia animation.
-    """
-    angle = t * 0.5  # radians per second
+    """Returns c on a circle — animate by passing increasing t (seconds)."""
+    angle = t * 0.5
     return complex(radius * math.cos(angle), radius * math.sin(angle))

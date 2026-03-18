@@ -37,7 +37,7 @@ from benchmark import run_benchmark, format_hud_message
 # ─── Window & render constants ────────────────────────────────────────────────
 WIN_W, WIN_H    = 1200, 800
 TARGET_FPS      = 60
-MAX_ITER        = 256
+MAX_ITER        = 128          # 128 is visually rich and ~2× faster than 256
 
 # ─── Default view bounds per fractal ─────────────────────────────────────────
 DEFAULT_BOUNDS = {
@@ -46,8 +46,9 @@ DEFAULT_BOUNDS = {
     "Burning Ship": (-2.5,  1.5,  -1.75, 0.75),
 }
 
-ZOOM_SPEED  = 0.15   # fraction of current range to zoom per step
-PAN_SPEED   = 0.05   # fraction of current range to pan per keypress
+ZOOM_SPEED        = 0.15   # fraction of current range to zoom per step
+PAN_SPEED         = 0.05   # fraction of current range to pan per keypress
+JULIA_C_THRESHOLD = 0.002  # minimum c change before triggering a new Julia render
 
 
 # ─── View state ──────────────────────────────────────────────────────────────
@@ -169,6 +170,7 @@ def main():
     dirty         = True    # True = need to re-render
     julia_anim    = False
     anim_start    = time.time()
+    _last_c       = None    # track last Julia c to avoid redundant submits
 
     # Current rendered surface (displayed while a new render is in flight)
     display_surf  = pygame.Surface((WIN_W, WIN_H))
@@ -255,25 +257,31 @@ def main():
                 view.zoom_to_pixel(mx, my, WIN_W, WIN_H, event.y)
                 dirty = True
 
-        # ── Julia animation ───────────────────────────────────────────────
-        if julia_anim and fractal_name == "Julia":
-            dirty = True  # keep re-rendering for animation
-
         # ── Submit render ────────────────────────────────────────────────
-        if dirty and not worker.is_busy:
-            dirty  = False
+        if not worker.is_busy:
             kwargs = {}
-            if fractal_name == "Julia":
-                t   = time.time() - anim_start if julia_anim else 0
-                kwargs["c"] = get_animated_c(t) if julia_anim else None
+            should_render = dirty
 
-            worker.submit(
-                FRACTALS[fractal_name],
-                WIN_W, WIN_H,
-                view.bounds,
-                MAX_ITER,
-                extra_kwargs=kwargs,
-            )
+            if fractal_name == "Julia":
+                t  = time.time() - anim_start if julia_anim else 0
+                new_c = get_animated_c(t) if julia_anim else complex(-0.7, 0.27015)
+                kwargs["c"] = new_c
+
+                # For Julia animation: only re-render when c has moved enough
+                if julia_anim:
+                    if _last_c is None or abs(new_c - _last_c) >= JULIA_C_THRESHOLD:
+                        should_render = True
+                        _last_c = new_c
+
+            if should_render:
+                dirty = False
+                worker.submit(
+                    FRACTALS[fractal_name],
+                    WIN_W, WIN_H,
+                    view.bounds,
+                    MAX_ITER,
+                    extra_kwargs=kwargs,
+                )
 
         # ── Collect finished render ───────────────────────────────────────
         render_result = worker.result

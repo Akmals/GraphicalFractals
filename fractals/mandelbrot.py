@@ -1,96 +1,106 @@
 """
 mandelbrot.py — Mandelbrot Set fractal renderer.
 
-Parallel strategy: splits the image into horizontal strips,
-renders each strip in a separate OS process (true parallelism, no GIL).
+Uses Numba JIT compilation with parallel=True for native multi-core speed.
+Falls back to fast NumPy vectorisation if Numba is unavailable.
 
-To port to CUDA on PC:
-  Replace _render_strip with a @cuda.jit kernel.
+Numba compiles the tight escape-time loop to native machine code and
+parallelises across all CPU cores using prange — typically 10-50x faster
+than pure NumPy on the same hardware.
 """
 
 import numpy as np
-from multiprocessing import Pool
-import sys
-import os
+import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from backend import BACKEND, NUM_WORKERS
+from backend import BACKEND
+
+# ─── Try to import Numba ─────────────────────────────────────────────────────
+try:
+    from numba import njit, prange
+    _NUMBA = True
+except ImportError:
+    _NUMBA = False
 
 
-# ─── Core iteration logic (runs in worker processes) ─────────────────────────
+# ─── Numba JIT path ───────────────────────────────────────────────────────────
 
-def _render_strip(args):
-    """
-    Render a horizontal strip of the Mandelbrot set.
-    Called in a worker process — safe from the GIL.
-    """
-    width, y_start, y_end, height, xmin, xmax, ymin, ymax, max_iter = args
+if _NUMBA:
+    @njit(parallel=True, cache=True, fastmath=True)
+    def _mandelbrot_numba(width, height, xmin, xmax, ymin, ymax, max_iter):
+        result = np.zeros((height, width), dtype=np.float64)
+        dx = (xmax - xmin) / width
+        dy = (ymax - ymin) / height
+        log2 = np.log(2.0)
 
-    result = np.zeros((y_end - y_start, width), dtype=np.float64)
+        for py in prange(height):
+            cy = ymin + py * dy
+            for px in range(width):
+                cx = xmin + px * dx
+                zx, zy = 0.0, 0.0
+                i = 0
+                while zx * zx + zy * zy <= 4.0 and i < max_iter:
+                    zx, zy = zx * zx - zy * zy + cx, 2.0 * zx * zy + cy
+                    i += 1
+                if i < max_iter:
+                    log_zn = np.log(zx * zx + zy * zy) * 0.5
+                    nu = np.log(log_zn / log2) / log2
+                    result[py, px] = i + 1.0 - nu
 
-    for row_idx, py in enumerate(range(y_start, y_end)):
-        for px in range(width):
-            # Map pixel → complex plane
-            cx = xmin + px * (xmax - xmin) / width
-            cy = ymin + py * (ymax - ymin) / height
-
-            zx, zy = 0.0, 0.0
-            iteration = 0
-            while zx * zx + zy * zy <= 4.0 and iteration < max_iter:
-                zx, zy = zx * zx - zy * zy + cx, 2.0 * zx * zy + cy
-                iteration += 1
-
-            if iteration < max_iter:
-                # Smooth coloring — removes banding artifacts
-                log_zn = np.log(zx * zx + zy * zy) / 2.0
-                nu = np.log(log_zn / np.log(2)) / np.log(2)
-                result[row_idx, px] = iteration + 1 - nu
-            else:
-                result[row_idx, px] = 0.0  # inside set → black
-
-    return y_start, result
+        return result
 
 
-def _render_sequential(width, height, bounds, max_iter):
-    """Single-process render for benchmarking baseline."""
-    xmin, xmax, ymin, ymax = bounds
-    args = (width, 0, height, height, xmin, xmax, ymin, ymax, max_iter)
-    _, result = _render_strip(args)
-    return result
+# ─── NumPy fallback ───────────────────────────────────────────────────────────
 
+def _mandelbrot_numpy(width, height, xmin, xmax, ymin, ymax, max_iter):
+    """Vectorised NumPy fallback (no Numba)."""
+    x  = np.linspace(xmin, xmax, width,  dtype=np.float64)
+    y  = np.linspace(ymin, ymax, height, dtype=np.float64)
+    cx, cy = np.meshgrid(x, y)
 
-def _render_multiprocessing(width, height, bounds, max_iter):
-    """Parallel render using multiprocessing.Pool — true parallelism."""
-    xmin, xmax, ymin, ymax = bounds
+    zx    = np.zeros_like(cx)
+    zy    = np.zeros_like(cy)
+    alive = np.ones((height, width), dtype=bool)
+    iters = np.zeros((height, width), dtype=np.float32)
 
-    # Divide image into strips, one per worker
-    strip_height = height // NUM_WORKERS
-    strips = []
-    for i in range(NUM_WORKERS):
-        y_start = i * strip_height
-        y_end = height if i == NUM_WORKERS - 1 else y_start + strip_height
-        strips.append((width, y_start, y_end, height, xmin, xmax, ymin, ymax, max_iter))
+    for _ in range(max_iter):
+        ax  = zx[alive]; ay = zy[alive]
+        ax2 = ax * ax;   ay2 = ay * ay
+        zx[alive] = ax2 - ay2 + cx[alive]
+        zy[alive] = 2.0 * ax * ay + cy[alive]
+        iters[alive] += 1.0
+        alive &= (zx * zx + zy * zy <= 4.0)
+        if not alive.any():
+            break
 
     result = np.zeros((height, width), dtype=np.float64)
-
-    with Pool(processes=NUM_WORKERS) as pool:
-        for y_start, strip_data in pool.map(_render_strip, strips):
-            result[y_start: y_start + strip_data.shape[0]] = strip_data
-
+    esc = iters < max_iter
+    if esc.any():
+        zx2_e  = zx[esc] ** 2; zy2_e = zy[esc] ** 2
+        log_zn = np.log(np.maximum(zx2_e + zy2_e, 1e-10)) / 2.0
+        nu     = np.log(np.maximum(log_zn / np.log(2), 1e-10)) / np.log(2)
+        result[esc] = iters[esc] + 1.0 - nu
     return result
 
+
+# ─── Public API ───────────────────────────────────────────────────────────────
+
+_warmed_up = False
 
 def render(width, height, bounds, max_iter=256, force_sequential=False):
     """
-    Main render entry point. Dispatches based on backend.py setting.
+    Main render entry point. Uses Numba JIT (parallel) when available,
+    otherwise falls back to NumPy vectorisation.
     force_sequential=True is used by the benchmark.
     """
-    if force_sequential or BACKEND == "SEQUENTIAL":
-        return _render_sequential(width, height, bounds, max_iter)
-    elif BACKEND == "MULTIPROCESSING":
-        return _render_multiprocessing(width, height, bounds, max_iter)
-    elif BACKEND == "CUDA":
-        # TODO: import and call numba CUDA kernel here on PC
-        raise NotImplementedError("Switch to PC to use CUDA backend.")
+    global _warmed_up
+    xmin, xmax, ymin, ymax = bounds
+
+    if _NUMBA:
+        if not _warmed_up:
+            # First call triggers JIT compile (~1 s); subsequent calls are fast.
+            _mandelbrot_numba(64, 64, xmin, xmax, ymin, ymax, 16)
+            _warmed_up = True
+        return _mandelbrot_numba(width, height, xmin, xmax, ymin, ymax, max_iter)
     else:
-        return _render_sequential(width, height, bounds, max_iter)
+        return _mandelbrot_numpy(width, height, xmin, xmax, ymin, ymax, max_iter)
