@@ -1,6 +1,15 @@
 pygame>=2.5
 numpy>=1.26
 matplotlib>=3.8
-numba>=0.59        # JIT compilation for fast CPU rendering on Mac
-# Uncomment when on PC with CUDA:
-# cupy-cuda12x>=13.0
+numba>=0.59           # JIT compilation for CPU rendering AND CUDA kernels (numba.cuda)
+
+# ─── PC (CUDA) extras ───────────────────────────────────────────────────────
+# Numba's CUDA backend needs the NVIDIA CUDA runtime libraries. The easiest
+# way to pull them in via pip is the official nvidia-cuda-runtime wheel.
+# Uncomment these when on the PC with the RTX 4060 Ti:
+#
+# nvidia-cuda-runtime-cu12
+# nvidia-cuda-nvcc-cu12
+#
+# Alternative: install the full CUDA Toolkit 12.x from NVIDIA directly
+# (https://developer.nvidia.com/cuda-downloads) instead of these wheels.

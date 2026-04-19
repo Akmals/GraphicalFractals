@@ -1,12 +1,18 @@
 """
 mandelbrot.py — Mandelbrot Set fractal renderer.
 
-Uses Numba JIT compilation with parallel=True for native multi-core speed.
-Falls back to fast NumPy vectorisation if Numba is unavailable.
+Three backends, selected via backend.BACKEND:
 
-Numba compiles the tight escape-time loop to native machine code and
-parallelises across all CPU cores using prange — typically 10-50x faster
-than pure NumPy on the same hardware.
+  SEQUENTIAL / MULTIPROCESSING
+      Numba @njit(parallel=True) on the CPU. One thread per row (prange),
+      JIT-compiled to native machine code. Falls back to vectorised NumPy
+      when Numba is unavailable.
+
+  CUDA
+      Numba @cuda.jit kernel. Launches one GPU thread per pixel in a 2-D
+      grid (16×16 thread blocks). A 1200×800 frame is ~960k parallel
+      threads — the Mandelbrot escape-time loop is embarrassingly parallel
+      so a modern GPU (e.g. RTX 4060 Ti) beats the CPU path by 50–200×.
 """
 
 import numpy as np
@@ -15,15 +21,26 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from backend import BACKEND
 
-# ─── Try to import Numba ─────────────────────────────────────────────────────
+# ─── Try Numba CPU JIT ───────────────────────────────────────────────────────
 try:
     from numba import njit, prange
     _NUMBA = True
 except ImportError:
     _NUMBA = False
 
+# ─── Try Numba CUDA ──────────────────────────────────────────────────────────
+_CUDA = False
+if BACKEND == "CUDA":
+    try:
+        from numba import cuda
+        import math as _math
+        if cuda.is_available():
+            _CUDA = True
+    except Exception:
+        _CUDA = False
 
-# ─── Numba JIT path ───────────────────────────────────────────────────────────
+
+# ─── Numba CPU JIT path ──────────────────────────────────────────────────────
 
 if _NUMBA:
     @njit(parallel=True, cache=True, fastmath=True)
@@ -50,7 +67,62 @@ if _NUMBA:
         return result
 
 
-# ─── NumPy fallback ───────────────────────────────────────────────────────────
+# ─── CUDA GPU kernel ─────────────────────────────────────────────────────────
+#
+# Kernel launch strategy:
+#   - 2-D grid of 16×16 thread blocks → 256 threads per block.
+#   - Each thread computes exactly one pixel of the output image.
+#   - cuda.grid(2) returns the pixel coordinates (px, py) this thread owns.
+#   - No inter-thread communication needed: Mandelbrot is embarrassingly
+#     parallel, so every pixel is independent → perfect GPU workload.
+#
+# Memory:
+#   - The output array lives in GPU device memory (cuda.device_array).
+#   - We copy back to host only once per frame (.copy_to_host()).
+
+if _CUDA:
+    @cuda.jit(fastmath=True)
+    def _mandelbrot_cuda_kernel(result, xmin, ymin, dx, dy, max_iter):
+        px, py = cuda.grid(2)
+        height, width = result.shape
+        if px >= width or py >= height:
+            return
+
+        cx = xmin + px * dx
+        cy = ymin + py * dy
+        zx = 0.0
+        zy = 0.0
+        i = 0
+        while zx * zx + zy * zy <= 4.0 and i < max_iter:
+            zx, zy = zx * zx - zy * zy + cx, 2.0 * zx * zy + cy
+            i += 1
+
+        if i < max_iter:
+            log_zn = _math.log(zx * zx + zy * zy) * 0.5
+            nu = _math.log(log_zn / _math.log(2.0)) / _math.log(2.0)
+            result[py, px] = i + 1.0 - nu
+        else:
+            result[py, px] = 0.0
+
+    def _mandelbrot_cuda(width, height, xmin, xmax, ymin, ymax, max_iter):
+        dx = (xmax - xmin) / width
+        dy = (ymax - ymin) / height
+
+        d_result = cuda.device_array((height, width), dtype=np.float64)
+
+        # 16×16 threads per block is a good default on every modern CUDA GPU.
+        threads_per_block = (16, 16)
+        blocks_x = (width  + threads_per_block[0] - 1) // threads_per_block[0]
+        blocks_y = (height + threads_per_block[1] - 1) // threads_per_block[1]
+        blocks_per_grid = (blocks_x, blocks_y)
+
+        _mandelbrot_cuda_kernel[blocks_per_grid, threads_per_block](
+            d_result, xmin, ymin, dx, dy, max_iter
+        )
+        return d_result.copy_to_host()
+
+
+# ─── NumPy fallback ──────────────────────────────────────────────────────────
 
 def _mandelbrot_numpy(width, height, xmin, xmax, ymin, ymax, max_iter):
     """Vectorised NumPy fallback (no Numba)."""
@@ -83,24 +155,32 @@ def _mandelbrot_numpy(width, height, xmin, xmax, ymin, ymax, max_iter):
     return result
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
+# ─── Public API ──────────────────────────────────────────────────────────────
 
 _warmed_up = False
 
 def render(width, height, bounds, max_iter=256, force_sequential=False):
     """
-    Main render entry point. Uses Numba JIT (parallel) when available,
-    otherwise falls back to NumPy vectorisation.
+    Main render entry point. Dispatch order:
+      1. CUDA kernel (when BACKEND="CUDA" and a GPU is present)
+      2. Numba CPU parallel JIT
+      3. Vectorised NumPy
     force_sequential=True is used by the benchmark.
     """
     global _warmed_up
     xmin, xmax, ymin, ymax = bounds
 
+    if _CUDA and not force_sequential:
+        if not _warmed_up:
+            # Warm-up launch compiles the kernel & allocates context (~1 s once).
+            _mandelbrot_cuda(64, 64, xmin, xmax, ymin, ymax, 16)
+            _warmed_up = True
+        return _mandelbrot_cuda(width, height, xmin, xmax, ymin, ymax, max_iter)
+
     if _NUMBA:
         if not _warmed_up:
-            # First call triggers JIT compile (~1 s); subsequent calls are fast.
             _mandelbrot_numba(64, 64, xmin, xmax, ymin, ymax, 16)
             _warmed_up = True
         return _mandelbrot_numba(width, height, xmin, xmax, ymin, ymax, max_iter)
-    else:
-        return _mandelbrot_numpy(width, height, xmin, xmax, ymin, ymax, max_iter)
+
+    return _mandelbrot_numpy(width, height, xmin, xmax, ymin, ymax, max_iter)

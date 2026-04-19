@@ -3,14 +3,17 @@ backend.py — Backend selector for fractal rendering.
 
 Change BACKEND to switch between rendering modes:
   "SEQUENTIAL"       — single-threaded NumPy (slow, for benchmarking)
-  "MULTIPROCESSING"  — Python multiprocessing Pool (parallel CPU, Mac)
-  "CUDA"             — Numba CUDA kernels (GPU, PC with RTX 4060 Ti)
+  "MULTIPROCESSING"  — Numba parallel CPU JIT (current Mac path)
+  "CUDA"             — Numba CUDA GPU kernels (PC with RTX 4060 Ti)
+
+You can also override without editing this file by setting the env var
+FRACTAL_BACKEND, e.g.  FRACTAL_BACKEND=CUDA python main.py
 """
 
 import os
 
 # ─── CHANGE THIS TO "CUDA" WHEN ON PC ───────────────────────────────────────
-BACKEND = "MULTIPROCESSING"
+BACKEND = os.environ.get("FRACTAL_BACKEND", "MULTIPROCESSING").upper()
 # ────────────────────────────────────────────────────────────────────────────
 
 # Auto-detect number of CPU cores for multiprocessing

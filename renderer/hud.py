@@ -37,7 +37,6 @@ class HUD:
             ("+ / -  / Scroll", "Zoom"),
             ("M",  "Mandelbrot"),
             ("J",  "Julia Set"),
-            ("B",  "Burning Ship"),
             ("C",  "Cycle Palette"),
             ("Space", "Animate Julia"),
             ("R",  "Reset View"),

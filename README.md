@@ -1,20 +1,33 @@
 # GPU Fractal Explorer
 
-An interactive fractal explorer that uses Python multiprocessing to render fractals in parallel across all CPU cores.
+An interactive fractal explorer with three interchangeable render backends:
+sequential CPU, parallel CPU (Numba JIT), and CUDA GPU kernels.
 
-VIEW LIVE HERE: https://web-zeta-jet-29.vercel.app/ 
+VIEW LIVE HERE: https://web-zeta-jet-29.vercel.app/
+
 ## Features
-- 3 Fractals: Mandelbrot Set, Julia Set (with live animation), Burning Ship
-- Parallel rendering using Python multiprocessing
+- 2 Fractals: Mandelbrot Set, Julia Set (with live animation)
+- Three backends: sequential, parallel CPU, **CUDA GPU** (see [CUDA_SETUP.md](CUDA_SETUP.md))
 - 12 colour palettes
-- Built-in benchmark: press P to compare sequential vs parallel timing
+- Built-in benchmark: press P to compare sequential vs parallel/GPU timing
 - Screenshot export: press S
 
-## Quick Start
+## Quick Start (Mac / CPU)
 
 ```bash
 pip3 install -r requirements.txt
 python3 main.py
+```
+
+## Quick Start (PC / CUDA GPU)
+
+See **[CUDA_SETUP.md](CUDA_SETUP.md)** for full instructions. Summary:
+
+```powershell
+pip install -r requirements.txt
+pip install nvidia-cuda-runtime-cu12 nvidia-cuda-nvcc-cu12
+$env:FRACTAL_BACKEND = "CUDA"
+python main.py
 ```
 
 ## Controls
@@ -25,11 +38,10 @@ python3 main.py
 | + / - / Scroll | Zoom |
 | M | Mandelbrot |
 | J | Julia Set |
-| B | Burning Ship |
 | C | Cycle palette |
 | Space | Toggle Julia animation |
 | R | Reset view |
-| P | Benchmark (sequential vs parallel) |
+| P | Benchmark (sequential vs parallel/GPU) |
 | S | Screenshot |
 | H | Help overlay |
 | ESC | Quit |
@@ -42,9 +54,8 @@ gpu-fractals/
 ├── backend.py           # Backend selector
 ├── benchmark.py         # Timing comparison runner
 ├── fractals/
-│   ├── mandelbrot.py    # Mandelbrot set
-│   ├── julia.py         # Julia set with animation
-│   └── burning_ship.py  # Burning Ship fractal
+│   ├── mandelbrot.py    # Mandelbrot set (CPU + CUDA)
+│   └── julia.py         # Julia set with animation (CPU + CUDA)
 └── renderer/
     ├── colormap.py      # 12 colour palette LUTs
     └── hud.py           # On-screen display overlay

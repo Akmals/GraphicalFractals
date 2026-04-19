@@ -3,7 +3,7 @@
 terminal_benchmark.py — Sequential vs Parallel Fractal Benchmark (Terminal)
 
 Runs directly in your terminal — no GUI needed.
-Measures genuine single-core vs multi-core performance for all three fractals.
+Measures genuine single-core vs multi-core performance for both fractals.
 
 Usage:
   python3 terminal_benchmark.py                  # full benchmark
@@ -35,7 +35,6 @@ RESOLUTIONS = {
 DEFAULT_BOUNDS = {
     "mandelbrot":   (-2.5,  1.0,  -1.25, 1.25),
     "julia":        (-2.0,  2.0,  -1.5,  1.5),
-    "burning_ship": (-2.5,  1.5,  -1.75, 0.75),
 }
 
 MAX_ITER = 128
@@ -103,27 +102,6 @@ def _julia_sequential(width, height, bounds, max_iter, jcx=-0.7, jcy=0.27015):
             break
 
     return _smooth_result(zx, zy, iters, height, width, max_iter)
-
-
-def _burning_ship_sequential(width, height, bounds, max_iter):
-    xmin, xmax, ymin, ymax = bounds
-    x = np.linspace(xmin, xmax, width, dtype=np.float64)
-    y = np.linspace(ymin, ymax, height, dtype=np.float64)
-    cx, cy = np.meshgrid(x, y)
-    zx = np.zeros_like(cx); zy = np.zeros_like(cy)
-    alive = np.ones((height, width), dtype=bool)
-    iters = np.zeros((height, width), dtype=np.float64)
-
-    for _ in range(max_iter):
-        ax = zx[alive]; ay = zy[alive]
-        zx[alive] = ax * ax - ay * ay + cx[alive]
-        zy[alive] = 2.0 * np.abs(ax) * np.abs(ay) + cy[alive]
-        iters[alive] += 1.0
-        alive &= (zx * zx + zy * zy <= 4.0)
-        if not alive.any():
-            break
-
-    return np.flipud(_smooth_result(zx, zy, iters, height, width, max_iter))
 
 
 def _smooth_result(zx, zy, iters, height, width, max_iter):
@@ -194,33 +172,6 @@ def _parallel_julia_worker(args):
     return start_row, result
 
 
-def _parallel_burning_ship_worker(args):
-    start_row, end_row, width, xmin, xmax, ymin, ymax, max_iter, height = args
-    chunk_h = end_row - start_row
-    x = np.linspace(xmin, xmax, width, dtype=np.float64)
-    y_vals = ymin + np.arange(start_row, end_row) * (ymax - ymin) / height
-    cx, cy = np.meshgrid(x, y_vals)
-    zx = np.zeros_like(cx); zy = np.zeros_like(cy)
-    alive = np.ones((chunk_h, width), dtype=bool)
-    iters = np.zeros((chunk_h, width), dtype=np.float64)
-    for _ in range(max_iter):
-        ax = zx[alive]; ay = zy[alive]
-        zx[alive] = ax * ax - ay * ay + cx[alive]
-        zy[alive] = 2.0 * np.abs(ax) * np.abs(ay) + cy[alive]
-        iters[alive] += 1.0
-        alive &= (zx * zx + zy * zy <= 4.0)
-        if not alive.any():
-            break
-    result = np.zeros((chunk_h, width), dtype=np.float64)
-    esc = iters < max_iter
-    if esc.any():
-        zx2 = zx[esc]**2; zy2 = zy[esc]**2
-        log_zn = np.log(np.maximum(zx2 + zy2, 1e-10)) / 2.0
-        nu = np.log(np.maximum(log_zn / np.log(2), 1e-10)) / np.log(2)
-        result[esc] = iters[esc] + 1.0 - nu
-    return start_row, result
-
-
 # ─── Parallel Renderer (multiprocessing Pool) ────────────────────────────────
 
 def _render_parallel(fractal_type, width, height, bounds, max_iter, n_workers=None):
@@ -244,7 +195,6 @@ def _render_parallel(fractal_type, width, height, bounds, max_iter, n_workers=No
     worker_fn = {
         "mandelbrot":   _parallel_mandelbrot_worker,
         "julia":        _parallel_julia_worker,
-        "burning_ship": _parallel_burning_ship_worker,
     }[fractal_type]
 
     result = np.zeros((height, width), dtype=np.float64)
@@ -252,8 +202,6 @@ def _render_parallel(fractal_type, width, height, bounds, max_iter, n_workers=No
         for start_row, chunk in pool.map(worker_fn, tasks):
             result[start_row:start_row + chunk.shape[0]] = chunk
 
-    if fractal_type == "burning_ship":
-        result = np.flipud(result)
     return result
 
 
@@ -262,7 +210,6 @@ def _render_parallel(fractal_type, width, height, bounds, max_iter, n_workers=No
 SEQUENTIAL_FNS = {
     "mandelbrot":   _mandelbrot_sequential,
     "julia":        lambda w, h, b, mi: _julia_sequential(w, h, b, mi),
-    "burning_ship": _burning_ship_sequential,
 }
 
 
@@ -509,7 +456,7 @@ Examples:
     parser.add_argument("--live", choices=["seq", "par"],
                         help="Live FPS mode: 'seq' for sequential, 'par' for parallel")
     parser.add_argument("--fractal",
-                        choices=["mandelbrot", "julia", "burning_ship"],
+                        choices=["mandelbrot", "julia"],
                         default=None,
                         help="Benchmark a specific fractal (default: all)")
     parser.add_argument("--res",
@@ -521,7 +468,7 @@ Examples:
     args = parser.parse_args()
     width, height = RESOLUTIONS[args.res]
     fractals = ([args.fractal] if args.fractal
-                else ["mandelbrot", "julia", "burning_ship"])
+                else ["mandelbrot", "julia"])
 
     # Banner
     print()

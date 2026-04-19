@@ -7,7 +7,7 @@ rendered using Python multiprocessing (or CUDA on PC).
 Controls:
   WASD / Arrow keys   Pan
   + / - / Scroll      Zoom
-  M / J / B           Switch fractal (Mandelbrot / Julia / Burning Ship)
+  M / J               Switch fractal (Mandelbrot / Julia)
   C                   Cycle colour palette
   Space               Toggle Julia animation
   R                   Reset view to default
@@ -43,7 +43,6 @@ MAX_ITER        = 128          # 128 is visually rich and ~2× faster than 256
 DEFAULT_BOUNDS = {
     "Mandelbrot":   (-2.5,  1.0,  -1.25, 1.25),
     "Julia":        (-2.0,  2.0,  -1.5,  1.5 ),
-    "Burning Ship": (-2.5,  1.5,  -1.75, 0.75),
 }
 
 ZOOM_SPEED        = 0.15   # fraction of current range to zoom per step
@@ -222,9 +221,6 @@ def main():
                 elif key == pygame.K_j:
                     fractal_name = "Julia"; fractal_idx = FRACTAL_KEYS.index(fractal_name)
                     view = ViewState(DEFAULT_BOUNDS[fractal_name]); dirty=True; julia_anim=True
-                elif key == pygame.K_b:
-                    fractal_name = "Burning Ship"; fractal_idx = FRACTAL_KEYS.index(fractal_name)
-                    view = ViewState(DEFAULT_BOUNDS[fractal_name]); dirty=True
 
                 # Palette
                 elif key == pygame.K_c:
