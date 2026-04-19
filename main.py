@@ -27,6 +27,14 @@ import numpy as np
 # Put project root on path so imports work from any CWD
 sys.path.insert(0, os.path.dirname(__file__))
 
+# Force UTF-8 on Windows consoles so unicode box-drawing chars in prints don't
+# crash benchmark output on cp1252 terminals.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from backend import get_backend_label, BACKEND, NUM_WORKERS
 from fractals import FRACTAL_KEYS, FRACTALS
 from fractals.julia import get_animated_c
@@ -34,10 +42,17 @@ from renderer.colormap import ColormapManager
 from renderer.hud import HUD
 from benchmark import run_benchmark, format_hud_message
 
-# ─── Window & render constants ────────────────────────────────────────────────
-WIN_W, WIN_H    = 1200, 800
-TARGET_FPS      = 60
+# ─── Window & render constants (overridable via CLI) ─────────────────────────
+WIN_W, WIN_H    = 1920, 1080
+TARGET_FPS      = 120
 MAX_ITER        = 128          # 128 is visually rich and ~2× faster than 256
+
+RES_PRESETS = {
+    "720p":  (1280, 720),
+    "1080p": (1920, 1080),
+    "1440p": (2560, 1440),
+    "4k":    (3840, 2160),
+}
 
 # ─── Default view bounds per fractal ─────────────────────────────────────────
 DEFAULT_BOUNDS = {
@@ -154,7 +169,8 @@ class RenderWorker:
 
 def main():
     pygame.init()
-    screen   = pygame.display.set_mode((WIN_W, WIN_H))
+    flags    = pygame.FULLSCREEN if globals().get("FULLSCREEN", False) else 0
+    screen   = pygame.display.set_mode((WIN_W, WIN_H), flags)
     pygame.display.set_caption("⚡ GPU Fractal Explorer  —  Parallel Processing Demo")
     clock    = pygame.time.Clock()
 
@@ -182,7 +198,8 @@ def main():
     os.makedirs("screenshots", exist_ok=True)
 
     print(f"\n  Fractal Explorer starting — backend: {get_backend_label()}")
-    print(f"  Workers: {NUM_WORKERS}  |  Max iterations: {MAX_ITER}")
+    print(f"  Resolution: {WIN_W}x{WIN_H}  |  Target FPS: {TARGET_FPS}  |  Max iter: {MAX_ITER}")
+    print(f"  Workers: {NUM_WORKERS}")
     print(f"  Press H for controls\n")
 
     # ── Main loop ─────────────────────────────────────────────────────────
@@ -343,8 +360,33 @@ def _save_screenshot(surface):
     print(f"  Screenshot saved → {path}")
 
 
+def _parse_args():
+    import argparse
+    p = argparse.ArgumentParser(
+        description="Interactive GPU Fractal Explorer",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--res", choices=list(RES_PRESETS), default="1080p",
+                   help="Resolution preset (overridden by --width/--height)")
+    p.add_argument("--width",  type=int, help="Window width in pixels")
+    p.add_argument("--height", type=int, help="Window height in pixels")
+    p.add_argument("--fps",    type=int, default=120, help="Target FPS cap")
+    p.add_argument("--iter",   type=int, default=128,
+                   dest="max_iter", help="Fractal max iterations")
+    p.add_argument("--fullscreen", action="store_true", help="Launch fullscreen")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
     # Required on macOS/Windows for multiprocessing safety
     import multiprocessing
     multiprocessing.freeze_support()
+
+    args = _parse_args()
+    preset_w, preset_h = RES_PRESETS[args.res]
+    WIN_W       = args.width  or preset_w
+    WIN_H       = args.height or preset_h
+    TARGET_FPS  = args.fps
+    MAX_ITER    = args.max_iter
+    FULLSCREEN  = args.fullscreen
     main()
